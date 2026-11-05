@@ -1,25 +1,62 @@
-name: AI Devops CI Notifier
+name: AI DevOps CI Notifier
 
 on:
-  push:
-     branches:
-        - main
-  pull_request:
-     branches:
-        - main
+  workflow_dispatch:
 
 jobs:
-   test:
-       runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-latest
 
-       steps:
-         - name: Checckout Repository
-           uses: actions/checkout@v4
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-         - name: Set up Python
-           uses: actions/setup-python@v5
-           with:
-               python-version: '3.11'
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-         - name: Run python tests
-           run: python -m unittest discover -v         
+      - name: Run Python Tests
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -v > test-results.txt 2>&1
+          test_exit_code=$?
+          cat test-results.txt
+
+          echo "exit_code=$test_exit_code" >> "$GITHUB_OUTPUT"
+
+          if [ "$test_exit_code" -eq 0 ]; then
+            echo "status=SUCCESS" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=FAILURE" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send Results to n8n
+        if: always() && steps.tests.outcome != 'skipped'
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+          N8N_WEBHOOK_SECRET: ${{ secrets.N8N_WEBHOOK_SECRET }}
+          TEST_STATUS: ${{ steps.tests.outputs.status }}
+          TEST_EXIT_CODE: ${{ steps.tests.outputs.exit_code }}
+        run: |
+          jq -n \
+            --arg job "$GITHUB_WORKFLOW" \
+            --arg build_number "$GITHUB_RUN_NUMBER" \
+            --arg status "$TEST_STATUS" \
+            --arg result_code "$TEST_EXIT_CODE" \
+            --rawfile error_log test-results.txt \
+            '{job:$job, build_number:$build_number, status:$status, result_code:$result_code, error_log:$error_log}' \
+            > payload.json
+
+          curl --fail --show-error \
+            -X POST "$N8N_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "x-webhook-secret: $N8N_WEBHOOK_SECRET" \
+            --data-binary @payload.json
+
+      - name: Mark Workflow Failed if Tests Failed
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
