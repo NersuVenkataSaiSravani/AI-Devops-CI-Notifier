@@ -1,10 +1,13 @@
 name: AI DevOps CI Notifier
 
-on:
-  #workflow_dispatch:
+on: 
   push:
      branches:
         - main
+  pull_request:
+     branches:
+        - main
+  workflow_dispatch:      
 
 jobs:
   test:
